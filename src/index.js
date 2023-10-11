@@ -5,7 +5,7 @@ import { parseHTML } from "linkedom";
 
 const baseUrl = "https://www.worcesterma.gov";
 const headers = [
-  "Date", "Type", "Item Number", "Fulltext", "Attachment", "Resolution"
+  "Date", "Type", "Subcategory", "Item Number", "Fulltext", "Attachment", "Resolution"
 ];
 
 function getMeetingDate(document) {
@@ -69,6 +69,8 @@ function getPetitionsList(document) {
     (row) => [
       /* business type */
       "petition",
+      /* subcategory */
+      "",
       /* item number */
       row.querySelector("td:nth-child(2) b")?.innerHTML?.slice(0, -1),
       /* fulltext */
@@ -93,12 +95,14 @@ function getHearingAndOrderList(document) {
     (row) => [
       /* business type */
       "hearing and order",
+      /* subcategory */
+      "",
       /* item number */
       row.querySelector("td:nth-child(2) b")?.innerHTML?.slice(0, -1),
       /* fulltext */
       row.querySelector("td:nth-child(3) font p")?.innerHTML,
       /* attachment link */
-      getAttachmentLink(row.querySelector("td:last-child a")?.getAttribute("href")),
+      getAttachmentLink(row.querySelector("a")?.getAttribute("href")),
       /* resolution */
       row.nextElementSibling?.querySelector("p b")?.innerHTML
 	.replaceAll("\n", " ")
@@ -108,13 +112,56 @@ function getHearingAndOrderList(document) {
 
 function getCommunicationsList(document) {
   const container = getDocumentSection(document, "COMMUNICATIONS OF THE CITY MANAGER", true);
+  let list = [];
 
   if (!container) {
-    return [];
+    return list;
   }
 
-  
-  return container.innerHTML;
+  let currentTable = container.nextElementSibling;
+
+  /* until we get to another top-level header... */
+  while (currentTable?.querySelectorAll("tr").length !== 1) {
+    let subsection, subcategory;
+
+    /* track the current subsection number and subcategory.  skip over any
+     * department headers and departments with no items */
+    while (currentTable?.querySelectorAll("tr").length === 2) {
+      subsection = currentTable.querySelector("p").textContent;
+      subcategory = currentTable.querySelector("tr:last-child > td:nth-child(3)").textContent.trim().replaceAll("\n", " - ");
+      currentTable = currentTable.nextElementSibling;
+    }
+
+    const rows = currentTable.querySelectorAll("tr:has(p)");
+
+    if (rows.length < 2) {
+      break;
+    }
+
+    const items = [ ...rows ].reduce(
+      (acc, _el, idx, arr) => (idx % 2) ? [ ...acc, [arr[idx - 1], arr[idx]]] : acc,
+      []
+    ).map(([row1, row2]) => [
+      /* business type */
+      "communication",
+      /* subcategory */
+      subcategory,
+      /* item number */
+      `${subsection}.${row1.querySelector("td:nth-child(3)")?.textContent}`.slice(0, -1),
+      /* fulltext */
+      row1.querySelector("td:nth-child(4)")?.textContent,
+      /* attachment link */
+      getAttachmentLink(row1.querySelector("a")?.getAttribute("href")),
+      /* resolution */
+      row2.querySelector("p")?.textContent
+        .replaceAll("\n", " ").trim(),
+    ]);
+
+    list = [ ...list, ...items ];
+    currentTable = currentTable.nextElementSibling;
+  }
+
+  return list;
 }
 
 async function fetchByDate(year, month, day) {
@@ -148,10 +195,10 @@ async function processDocument(doc) {
   const petitionsList = getPetitionsList(document);
   const hearingAndOrderList = getHearingAndOrderList(document);
   const communicationsList = getCommunicationsList(document);
-  //  console.log(communicationsList);
   const csv = await generateCSV([
     ...petitionsList,
-    ...hearingAndOrderList
+    ...hearingAndOrderList,
+    ...communicationsList
   ].map(
     (record) => ({
       "Date": meetingDate,
