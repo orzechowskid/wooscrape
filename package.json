@@ -1,0 +1,17 @@
+{
+  "type": "module",
+  "dependencies": {
+    "@json2csv/node": "^7.0.3",
+    "express": "^4.18.2",
+    "happy-dom": "^12.9.1",
+    "jsdom": "^22.1.0",
+    "linkedom": "^0.15.6",
+    "lodash.get": "^4.4.2",
+    "lru-cache": "^10.0.1",
+    "scrape-it": "^6.0.1",
+    "tabletojson": "^3.0.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.51.0"
+  }
+}
