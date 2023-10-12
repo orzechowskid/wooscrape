@@ -1,18 +1,97 @@
-import fs from "fs";
+// import fs from "fs";
 
 import { AsyncParser } from "@json2csv/node";
-import { parseHTML } from "linkedom";
+import * as CSSSelect from "css-select";
+import { DomHandler } from "domhandler";
+import * as DomUtils from "domutils";
+import { Parser } from "htmlparser2";
 
 const baseUrl = "https://www.worcesterma.gov";
-const headers = [
-  "Date", "Type", "Subcategory", "Item Number", "Fulltext", "Attachment", "Resolution"
-];
+
+const _enhance = (el) => {
+  if (el.__enhanced) {
+    return el;
+  }
+
+  el.__enhanced = true;
+  el.querySelector = function(selector) {
+    const res = CSSSelect.selectOne(selector, el);
+
+    if (res) {
+      _enhance(res);
+    }
+
+    return res;
+  }; // bind?
+  el.querySelectorAll = function(selector) {
+    const res = CSSSelect.selectAll(selector, el);
+    const rc = res.map(_enhance);
+
+    Object.defineProperty(rc, "item", {
+      get() {
+        return (idx) => rc[idx];
+      }
+    });
+
+    return rc;
+  };
+  el.closest = function(selector) { // FIXME: horrible
+    let p = _enhance(DomUtils.getParent(el));
+
+    while (p && p.tagName !== selector) {
+      p = _enhance(DomUtils.getParent(p));
+    }
+
+    return p;
+  };
+  el.getAttribute = function(attr) {
+    return DomUtils.getAttributeValue(el, attr);
+  };
+  Object.defineProperties(el, {
+    "innerHTML": {
+      get() {
+        return DomUtils.getInnerHTML(this);
+      }
+    },
+    "nextElementSibling": {
+      get() {
+        return _enhance(DomUtils.nextElementSibling(this));
+      }
+    },
+    "outerHTML": {
+      get() {
+        return DomUtils.getOuterHTML(this);
+      }
+    },
+    "parentElement": {
+      get() {
+        return _enhance(DomUtils.getParent(this));
+      }
+    },
+    "previousElementSibling": {
+      get() {
+        return _enhance(DomUtils.prevElementSibling(this));
+      }
+    },
+    "tagName": {
+      get() {
+        return this.name;
+      }
+    },
+    "textContent": {
+      get() {
+        return DomUtils.textContent(this);
+      }
+    }
+  });
+
+  return el;
+};
 
 function getMeetingDate(document) {
-  const dateEl = document.querySelector("table table:first-child tr:nth-child(3) font");
-
+  const dateEl = document.querySelector("table table:first-child tr:nth-child(3)");
   /* warning: server-local timezone applied */
-  return new Date(dateEl.innerHTML);
+  return new Date(dateEl.textContent);
 }
 
 function getAttachmentLink(path) {
@@ -21,203 +100,99 @@ function getAttachmentLink(path) {
     : null;
 }
 
-/**
- * @description section header tables currently look like this:
- * <table><tbody><tr><td/><td><b><font><p>{name}</p></font></b></td></tr></table>
- * so search for a table with one row which has one <td/> with contents exactly
- * matching the given section name
- * @param {Document} document
- * @param {string} sectionName
- * @returns {HTMLElement|null}
- */
-function getDocumentSectionHeader(document, sectionName) {
-  return [ ...document.querySelectorAll("table table:not(:has(tr:nth-child(2)))") ].find(
-    (table) => {
-      if (table.innerHTML.includes(sectionName)) {
-	return !![ ...table.querySelectorAll("p") ].find(
-	  (p) => p.innerHTML === sectionName
-	);
-      }
-    }
-  );
-}
-
-function getDocumentSection(document, sectionName, exact = false) {
-  const sectionHeader = getDocumentSectionHeader(document, sectionName);
-
-  return exact
-    ? sectionHeader
-    : sectionHeader?.nextElementSibling;
-}
-
-function getPopulatedRows(sectionElement) {
-  return [ ...sectionElement.querySelectorAll("tr") ].filter(
-    (row) => [ ...row.querySelectorAll("font") ].filter(
-      (fontEl) => fontEl.innerHTML.length > 0
-    ).length >= 2 /* item number and description */
-  );
-}
-
-function getPetitionsList(document) {
-  const petitionsContainer = getDocumentSection(document, "PETITIONS");
-
-  if (!petitionsContainer) {
-    return [];
-  }
-
-  return getPopulatedRows(petitionsContainer).map(
-    (row) => [
-      /* business type */
-      "petition",
-      /* subcategory */
-      "",
-      /* item number */
-      row.querySelector("td:nth-child(2) b")?.innerHTML?.slice(0, -1),
-      /* fulltext */
-      row.querySelector("td:nth-child(3) font p")?.innerHTML,
-      /* attachment link */
-      getAttachmentLink(row.querySelector("td:last-child a")?.getAttribute("href")),
-      /* resolution */
-      row.nextElementSibling?.querySelector("p b")?.innerHTML
-	.replaceAll("\n", " ")
-    ]
-  );
-}
-
-function getHearingAndOrderList(document) {
-  const container = getDocumentSection(document, "HEARING AND ORDER");
-
-  if (!container) {
-    return [];
-  }
-
-  return getPopulatedRows(container).map(
-    (row) => [
-      /* business type */
-      "hearing and order",
-      /* subcategory */
-      "",
-      /* item number */
-      row.querySelector("td:nth-child(2) b")?.innerHTML?.slice(0, -1),
-      /* fulltext */
-      row.querySelector("td:nth-child(3) font p")?.innerHTML,
-      /* attachment link */
-      getAttachmentLink(row.querySelector("a")?.getAttribute("href")),
-      /* resolution */
-      row.nextElementSibling?.querySelector("p b")?.innerHTML
-	.replaceAll("\n", " ")
-    ]
-  );
-}
-
-function getCommunicationsList(document) {
-  const container = getDocumentSection(document, "COMMUNICATIONS OF THE CITY MANAGER", true);
-  let list = [];
-
-  if (!container) {
-    return list;
-  }
-
-  let currentTable = container.nextElementSibling;
-
-  /* until we get to another top-level header... */
-  while (currentTable?.querySelectorAll("tr").length !== 1) {
-    let subsection, subcategory;
-
-    /* track the current subsection number and subcategory.  skip over any
-     * department headers and departments with no items */
-    while (currentTable?.querySelectorAll("tr").length === 2) {
-      subsection = currentTable.querySelector("p").textContent;
-      subcategory = currentTable.querySelector("tr:last-child > td:nth-child(3)").textContent.trim().replaceAll("\n", " - ");
-      currentTable = currentTable.nextElementSibling;
-    }
-
-    const rows = currentTable.querySelectorAll("tr:has(p)");
-
-    if (rows.length < 2) {
-      break;
-    }
-
-    const items = [ ...rows ].reduce(
-      (acc, _el, idx, arr) => (idx % 2) ? [ ...acc, [arr[idx - 1], arr[idx]]] : acc,
-      []
-    ).map(([row1, row2]) => [
-      /* business type */
-      "communication",
-      /* subcategory */
-      subcategory,
-      /* item number */
-      `${subsection}.${row1.querySelector("td:nth-child(3)")?.textContent}`.slice(0, -1),
-      /* fulltext */
-      row1.querySelector("td:nth-child(4)")?.textContent,
-      /* attachment link */
-      getAttachmentLink(row1.querySelector("a")?.getAttribute("href")),
-      /* resolution */
-      row2.querySelector("p")?.textContent
-        .replaceAll("\n", " ").trim(),
-    ]);
-
-    list = [ ...list, ...items ];
-    currentTable = currentTable.nextElementSibling;
-  }
-
-  return list;
-}
 
 async function fetchByDate(year, month, day) {
-  // const yyyy = String(year).slice(0, 4).padStart(4, "20");
-  // const mm = String(month).slice(0, 2).padStart(2, "0");
-  // const dd = String(day).slice(0, 2).padStart(2, "0");
+  const yyyy = String(year).slice(0, 4).padStart(4, "20");
+  const mm = String(month).slice(0, 2).padStart(2, "0");
+  const dd = String(day).slice(0, 2).padStart(2, "0");
 
-  //	console.log(`fetching: ${yyyy}-${mm}-${dd}`);
-  const response = fs.readFileSync("./index.html");
-  return response.toString("UTF-8");
-  // const response = await fetch(
-  // 	`${baseUrl}/agendas-minutes/city-council/${yyyy}/${yyyy}${mm}${dd}.htm`,
-  // 	{},
-  // );
+  console.log(`fetching: ${yyyy}-${mm}-${dd}`);
+  const response = await fetch(
+        `${baseUrl}/agendas-minutes/city-council/${yyyy}/${yyyy}${mm}${dd}.htm`,
+        {},
+  );
 
-  // return response.text();
+  return response.text();
+  // const response = fs.readFileSync("./index.html");
+  // return response.toString("UTF-8");
 }
 
-async function generateCSV(records) {
-  const parser = new AsyncParser({
-  });
+function generateCSV(records) {
+  const parser = new AsyncParser({ });
 
   return parser.parse(records).promise();
 }
 
 async function processDocument(doc) {
-  const {
-    document
-  } = parseHTML(doc);
-  const meetingDate = getMeetingDate(document).toISOString().split("T")[0];
-  const petitionsList = getPetitionsList(document);
-  const hearingAndOrderList = getHearingAndOrderList(document);
-  const communicationsList = getCommunicationsList(document);
-  const csv = await generateCSV([
-    ...petitionsList,
-    ...hearingAndOrderList,
-    ...communicationsList
-  ].map(
-    (record) => ({
-      "Date": meetingDate,
-      ...headers.slice(1).reduce(
-	(acc, el, idx) => ({ ...acc, [el]: record[idx] }),
-	{}
-      )
-    })
-  ));
+  return new Promise((resolve, reject) => {
+    const handler = new DomHandler((error, dom) => {
+      if (error) {
+        reject(error);
+      }
+      else {
+        resolve(_enhance(dom));
+      }
+    });
+    const parser = new Parser(handler);
 
-  console.log(
-    csv
-  );
+    parser.write(doc);
+    parser.end();
+  });
+}
+
+function scanDocument(document) {
+  const meetingDate = getMeetingDate(document).toISOString().split("T")[0];
+  const csvContents = [ ...document.querySelectorAll("table table tr:has(a)") ]
+    .slice(2) // page header goo
+    .map(
+      (row) => {
+        const headingDepth = [ ...row.querySelectorAll("td") ].findIndex((td) => !!td.textContent?.length);
+        const categories = [
+          row.querySelectorAll("td").item(headingDepth).textContent
+        ];
+
+        for (let i = headingDepth - 1; i >= 0; i--) {
+          let tableEl = row.closest("table").previousElementSibling;
+
+          while (tableEl && !(tableEl.querySelector(`tr:last-child td:nth-child(${i+1})`)?.textContent?.length)) {
+            tableEl = tableEl.previousElementSibling;
+          }
+
+          if (!tableEl) {
+            break;
+          }
+
+          categories.unshift([ ...tableEl.querySelectorAll(`tr:last-child > td`) ]
+            .map((td) => td.textContent.trim().replaceAll("\n", " "))
+            .filter(Boolean)
+            .join(" - ")
+          )
+        }
+
+        /* turn this row's data into an object with known keys */
+        return {
+          "date": meetingDate,
+          category1: categories[0],
+          category2: categories[1],
+          category3: categories[2],
+          fulltext: row.querySelector("p")?.textContent,
+          attachmentLink: getAttachmentLink(row.querySelector("a")?.getAttribute("href")),
+          resolution: row.nextElementSibling.querySelector("p")?.textContent.replaceAll("\n", " ").trim()
+        };
+      }
+    );
+
+  return csvContents;
 }
 
 async function go() {
-  const page = await fetchByDate("2023", "10", 3)
+  const page = await fetchByDate("2023", 10, "10");
+  const document = await processDocument(page);
+  const result = scanDocument(document);
+  const csv = await generateCSV(result);
 
-  await processDocument(page);
+  console.log(result);
+  console.log(csv);
 }
 
 go();
