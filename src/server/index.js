@@ -20,11 +20,13 @@ app.get("/api/1/page/:yyyy/:mm/:dd", async (req, res) => {
 	}
 	catch (ex) {
 		console.error(ex);
-		res.status(500).end();
+		res.status(+ex.message).end();
 	}
 });
 app.use(express.static(path.resolve(new URL('', import.meta.url).pathname, "..", "public")));
 
-app.listen(3000, () => {
-	console.log("listening on :3000");
+const port = process.env.PORT ?? 3000;
+
+app.listen(port, () => {
+	console.log(`listening on :${port}`);
 });
