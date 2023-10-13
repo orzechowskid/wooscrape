@@ -110,7 +110,7 @@ async function fetchByDate(year, month, day) {
 	}
 
 	return response.text();
-	// const response = fs.readFileSync("./index.html");
+	// const response = fs.readFileSync("./test/index.html");
 	// return response.toString("UTF-8");
 }
 
@@ -126,9 +126,9 @@ async function processDocument(doc) {
 			if (error) {
 				reject(error);
 			}
-      else {
-          resolve(_enhance(dom));
-      }
+			else {
+				resolve(_enhance(dom));
+			}
 		});
 		const parser = new Parser(handler);
 
@@ -200,7 +200,6 @@ export async function pageToCSV(year, month, day) {
 		throw new Error("404");
 	}
 
-	console.log(`page:`, page);
 	try {
 		const document = await processDocument(page);
 		const result = scanDocument(document);
